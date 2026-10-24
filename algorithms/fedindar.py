@@ -109,6 +109,11 @@ class FedINDARStrategy(FedAvg):
 
         self.mu_by_node: dict[int, float] = {}
         self.profile_mu_by_node: dict[int, float] = {}
+        
+        # FedIN-R3EDAR (Module 1): per-client profiles kept for EMD-guided selection
+        self.profile_by_node: dict[int, dict[str, np.ndarray]] = {}
+        self.count_by_node: dict[int, float] = {}
+        self.global_profile: dict[str, np.ndarray] | None = None
 
         self.profile_audit: list[dict[str, Any]] = []
         self.round_audit: list[dict[str, Any]] = []
@@ -291,6 +296,11 @@ class FedINDARStrategy(FedAvg):
             / max(values.sum(), _EPS)
             for region, values in global_profile.items()
         }
+                # FedIN-R3EDAR (Module 1): keep global profile for EMD-guided selection
+        self.global_profile = {
+            region: values.copy()
+            for region, values in global_profile.items()
+        }
 
         rows = []
 
@@ -325,6 +335,13 @@ class FedINDARStrategy(FedAvg):
 
             self.mu_by_node[node_id] = mu
             self.profile_mu_by_node[node_id] = mu
+            
+            # FedIN-R3EDAR (Module 1): keep profile and sample count per node
+            self.profile_by_node[node_id] = {
+                region: profile[region].copy()
+                for region in REGIONS
+            }
+            self.count_by_node[node_id] = float(count)
 
             rows.append(
                 {
