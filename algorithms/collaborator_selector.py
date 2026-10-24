@@ -142,6 +142,29 @@ class SlidingWindowTrainMixin:
 
         super().__init__(*args, **kwargs)
 
+    def _select_nodes(
+        self,
+        node_ids: list[int],
+        server_round: int,
+        is_fedindar: bool,
+    ) -> list[int]:
+        """Default selection: sliding window (unchanged FedIN-EDAR behaviour)."""
+
+        # Round 1:
+        # Every client must send its tumour profile.
+        if is_fedindar and server_round == 1:
+            return node_ids
+
+        # For FedINDAR, training starts at round 2 (window 0)
+        window_round = (server_round - 1) if is_fedindar else server_round
+
+        return select_sliding_window(
+            node_ids,
+            window_round,
+            self.fraction,
+            self.seed,
+        )
+    
     def configure_train(
         self,
         server_round: int,
@@ -158,20 +181,9 @@ class SlidingWindowTrainMixin:
 
         is_fedindar = hasattr(self, "_messages_with_client_config")
 
-        # Round 1:
-        # Every client must send its tumour profile.
-        if is_fedindar and server_round == 1:
-            selected = node_ids
-        else:
-            # For FedINDAR, training starts at round 2 (window 0)
-            window_round = (server_round - 1) if is_fedindar else server_round
-
-            selected = select_sliding_window(
-                node_ids,
-                window_round,
-                self.fraction,
-                self.seed,
-            )
+            # FedIN-R3EDAR (Module 1): selection moved into _select_nodes()
+        # so that subclasses (e.g. EMD-guided selection) can override it.
+        selected = self._select_nodes(node_ids, server_round, is_fedindar)
 
         if not selected:
             return []
@@ -236,3 +248,74 @@ class SlidingWindowTrainMixin:
                 MessageType.TRAIN,
             )
         )
+    
+
+# ---------------------------------------------------------------------------
+# FedIN-R3EDAR (Module 1): EMD-guided strategy mixin
+# ---------------------------------------------------------------------------
+
+
+class EMDGuidedTrainMixin(SlidingWindowTrainMixin):
+    """Replace the sliding window with EMD-guided group selection.
+
+    Round 1 (profiling): all hospitals are selected, as in FedIN-EDAR.
+    From round 2: hospitals are chosen with select_emd_guided(), using the
+    profiles saved by FedINDARStrategy in the profiling round, plus a
+    staleness bonus for hospitals that have not been selected recently.
+    If no profiles are available, it falls back to the sliding window.
+    """
+
+    def __init__(
+        self,
+        *args: Any,
+        emd_staleness_weight: float = 0.1,
+        **kwargs: Any,
+    ) -> None:
+
+        self.staleness_weight = emd_staleness_weight
+        self.staleness_by_node: dict[int, int] = {}
+
+        super().__init__(*args, **kwargs)
+
+    def _select_nodes(
+        self,
+        node_ids: list[int],
+        server_round: int,
+        is_fedindar: bool,
+    ) -> list[int]:
+
+        # Round 1: every client must send its tumour profile.
+        if is_fedindar and server_round == 1:
+            return node_ids
+
+        profiles = getattr(self, "profile_by_node", {})
+        counts = getattr(self, "count_by_node", {})
+        global_profile = getattr(self, "global_profile", None)
+
+        # No profiles (e.g. not FedIN-EDAR): keep the old behaviour.
+        if not profiles or global_profile is None:
+            log(INFO, "EMD selector: no profiles found, using sliding window")
+            return super()._select_nodes(node_ids, server_round, is_fedindar)
+
+        for node in node_ids:
+            self.staleness_by_node.setdefault(int(node), 0)
+
+        selected = select_emd_guided(
+            node_ids,
+            profiles,
+            counts,
+            global_profile,
+            self.staleness_by_node,
+            self.fraction,
+            self.staleness_weight,
+        )
+
+        # Update staleness: 0 for selected hospitals, +1 for the others.
+        for node in node_ids:
+            node = int(node)
+            if node in selected:
+                self.staleness_by_node[node] = 0
+            else:
+                self.staleness_by_node[node] += 1
+
+        return selected

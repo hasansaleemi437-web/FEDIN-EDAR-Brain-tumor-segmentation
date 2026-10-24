@@ -65,10 +65,12 @@ algorithm = "fedindar"
 proximal_mu = 0.01
 model_name = "3DUnet"
 
-# Client Participation ("fixed" or "sliding")
-collaborator-selector = "sliding"
+# Client Participation ("fixed", "sliding" or "emd")
+# FedIN-R3EDAR (Module 1): "emd" = EMD-guided selection; use "sliding" for the FedIN-EDAR baseline
+collaborator-selector = "emd"
 collaborator-fraction = 0.2
 collaborator-selector-seed = 42
+emd-staleness-weight = 0.1
 
 # RegSimAgg Hyperparameters (Temporal Damping & Distance Metric)
 regsimagg-regularization-round = 10
