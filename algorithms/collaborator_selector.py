@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from logging import INFO
 from math import ceil
 from random import Random
+import numpy as np
 from typing import Any
 
 from flwr.app import ArrayRecord, ConfigRecord, Message, MessageType, RecordDict
@@ -37,6 +38,86 @@ def select_sliding_window(
     return padded[
         w_idx * w_size : (w_idx + 1) * w_size
     ]
+
+# ---------------------------------------------------------------------------
+# FedIN-R3EDAR (Module 1): EMD-guided collaborator selection
+# ---------------------------------------------------------------------------
+
+_SELECTOR_EPS = 1e-12
+
+
+def _group_emd(
+    selected: list[int],
+    profiles: dict[int, dict[str, np.ndarray]],
+    counts: dict[int, float],
+    global_profile: dict[str, np.ndarray],
+) -> float:
+    """EMD between the combined profile of a group and the global profile.
+
+    The group profile is the sample-count weighted mean of the selected
+    hospitals' tumour-burden histograms (one histogram per region).
+    """
+
+    total = sum(counts[node] for node in selected)
+
+    distances = []
+    for region, target in global_profile.items():
+        mixed = sum(
+            counts[node] * profiles[node][region]
+            for node in selected
+        ) / max(total, _SELECTOR_EPS)
+
+        distances.append(
+            np.mean(np.abs(np.cumsum(mixed) - np.cumsum(target)))
+        )
+
+    return float(np.mean(distances))
+
+
+def select_emd_guided(
+    client_ids: list[int],
+    profiles: dict[int, dict[str, np.ndarray]],
+    counts: dict[int, float],
+    global_profile: dict[str, np.ndarray],
+    staleness: dict[int, int],
+    fraction: float = 0.2,
+    staleness_weight: float = 0.1,
+) -> list[int]:
+    """Greedy EMD-guided group selection (FedIN-R3EDAR, Module 1).
+
+    Adds one hospital at a time, each time choosing the hospital that makes
+    the group's combined profile closest to the global profile (lowest EMD).
+    Hospitals that have not been selected for many rounds get a bonus, so
+    no hospital is ignored for too long.
+
+        score(k) = EMD(group + k) - staleness_weight * staleness(k) / max_staleness
+    """
+
+    ordered = sorted(int(cid) for cid in client_ids if int(cid) in profiles)
+    if not ordered:
+        return []
+
+    group_size = max(1, int(len(ordered) * fraction))
+    max_staleness = max(max(staleness.get(n, 0) for n in ordered), 1)
+
+    selected: list[int] = []
+    remaining = list(ordered)
+
+    while len(selected) < group_size and remaining:
+        best_node, best_score = None, None
+
+        for node in remaining:
+            emd = _group_emd(selected + [node], profiles, counts, global_profile)
+            bonus = staleness.get(node, 0) / max_staleness
+            score = emd - staleness_weight * bonus
+
+            if best_score is None or score < best_score - 1e-12:
+                best_node, best_score = node, score
+
+        selected.append(best_node)
+        remaining.remove(best_node)
+
+    return selected
 
 
 class SlidingWindowTrainMixin:
