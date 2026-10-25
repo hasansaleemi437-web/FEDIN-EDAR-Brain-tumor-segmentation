@@ -24,6 +24,9 @@ def audit_communication_cost(history_csv_path: Path, num_rounds: int, context=No
     total_clients = int(context.run_config.get("num-clients", 33)) if context else 33
     algorithm = str(context.run_config.get("algorithm", "fl")).upper() if context else "FL"
 
+    # FedIN-R3EDAR (Module 1): show which collaborator selector was used
+    selector = str(context.run_config.get("collaborator-selector", "fixed")).lower() if context else "fixed"
+    selector_label = {"emd": "EMD-Guided Selection", "sliding": "Sliding Selection"}.get(selector, "All Clients")
     history_csv = Path(history_csv_path)
     if not history_csv.exists() or history_csv.stat().st_size == 0:
         return {}
@@ -70,7 +73,7 @@ def audit_communication_cost(history_csv_path: Path, num_rounds: int, context=No
     print(f"\n{'=' * 78}\n{header:^78}\n{'=' * 78}")
     print(f" Model Payload (Single Direction)   : {stats['model_size_mb']} MB")
     print(f" Total Completed Rounds             : {num_rounds}")
-    print(f" Actual Client-Rounds Transmitted   : {actual_client_rounds} (Sliding Selection)")
+    print(f" Actual Client-Rounds Transmitted   : {actual_client_rounds} ({selector_label})")
     print(f" Baseline Client-Rounds (All Nodes) : {baseline_client_rounds}")
     print(f"{'-' * 78}")
     print(f" Baseline Network Data (All Nodes)  : {stats['baseline_data_gb']} GB")
