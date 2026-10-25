@@ -115,6 +115,11 @@ class FedINDARStrategy(FedAvg):
         self.count_by_node: dict[int, float] = {}
         self.global_profile: dict[str, np.ndarray] | None = None
 
+        # FedIN-R3EDAR: Regional voxel counts and global class proportions
+        self.regional_voxels_by_node: dict[int, dict[str, float]] = {}
+        self.total_foreground_by_node: dict[int, float] = {}
+        self.global_proportions: dict[str, float] = {"ncr": 1.0 / 3.0, "ed": 1.0 / 3.0, "et": 1.0 / 3.0}
+
         self.profile_audit: list[dict[str, Any]] = []
         self.round_audit: list[dict[str, Any]] = []
 
@@ -335,7 +340,17 @@ class FedINDARStrategy(FedAvg):
 
             self.mu_by_node[node_id] = mu
             self.profile_mu_by_node[node_id] = mu
-            
+
+            # FedIN-R3EDAR: record regional voxel counts from client metrics
+            m = reply.content["metrics"]
+            node_fg = float(m.get("total_foreground_voxels", 1.0))
+            self.total_foreground_by_node[node_id] = node_fg
+            self.regional_voxels_by_node[node_id] = {
+                "ncr": float(m.get("voxel_count_ncr", 0.0)),
+                "ed": float(m.get("voxel_count_ed", 0.0)),
+                "et": float(m.get("voxel_count_et", 0.0)),
+            }
+
             # FedIN-R3EDAR (Module 1): keep profile and sample count per node
             self.profile_by_node[node_id] = {
                 region: profile[region].copy()
@@ -350,6 +365,8 @@ class FedINDARStrategy(FedAvg):
                     "sample_weight": float(weight),
                     "emd_distance": distance,
                     "profile_mu": mu,
+                    "regional_voxels": self.regional_voxels_by_node[node_id],
+                    "total_foreground": node_fg,
                     "histograms": {
                         region: profile[region].tolist()
                         for region in REGIONS
@@ -357,12 +374,21 @@ class FedINDARStrategy(FedAvg):
                 }
             )
 
+        # Calculate global class proportions pi_r = sum(q_k,r) / sum(N_k) across all clients
+        total_fed_fg = sum(self.total_foreground_by_node.values())
+        if total_fed_fg > 0:
+            self.global_proportions = {
+                r: sum(self.regional_voxels_by_node[nid][r] for nid in self.regional_voxels_by_node) / total_fed_fg
+                for r in ("ncr", "ed", "et")
+            }
+
         self.profile_audit = [
             {
                 "global_histograms": {
                     region: values.tolist()
                     for region, values in global_profile.items()
                 },
+                "global_class_proportions": self.global_proportions,
                 "clients": rows,
             }
         ]

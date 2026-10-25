@@ -110,6 +110,10 @@ def train(msg: Message, context: Context):
         # Collect tumour burden histograms across regions in a single data pass
         counts = {region: np.zeros(PROFILE_BINS, dtype=np.float64) for region in REGIONS}
 
+        # FedIN-R3EDAR (Step 1): Voxel counts per tumor class
+        q_voxels = {"ncr": 0.0, "ed": 0.0, "et": 0.0}
+        total_foreground = 0.0
+
         for batch in valloader:
             labels = batch["label"]
             if labels.ndim == 5:
@@ -127,11 +131,28 @@ def train(msg: Message, context: Context):
                     burden = float(mask.sum()) / total_voxels
                     counts[region] += np.histogram([burden], bins=TUMOR_BURDEN_BIN_EDGES)[0]
 
+                # Built-in NumPy vectorized regional voxel tallies:
+                # 1: NCR/NET, 2: ED, 3: ET
+                ncr_count = float((label == 1).sum())
+                ed_count = float((label == 2).sum())
+                et_count = float((label == 3).sum())
+               
+                q_voxels["ncr"] += ncr_count
+                q_voxels["ed"] += ed_count
+                q_voxels["et"] += et_count
+                total_foreground += (ncr_count + ed_count + et_count)
+
         for region in REGIONS:
             if counts[region].sum() > 0:
                 counts[region] /= counts[region].sum()
             for i, value in enumerate(counts[region]):
                 profile_metrics[profile_metric_key(region, i)] = float(value)
+
+        # FedIN-R3EDAR: transmit regional voxel counts (q_k,r) and foreground (N_k)
+        profile_metrics["voxel_count_ncr"] = q_voxels["ncr"]
+        profile_metrics["voxel_count_ed"] = q_voxels["ed"]
+        profile_metrics["voxel_count_et"] = q_voxels["et"]
+        profile_metrics["total_foreground_voxels"] = max(total_foreground, 1.0)
 
         print(
             f"[Client {partition_id}] ---> "
