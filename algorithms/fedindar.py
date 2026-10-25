@@ -18,8 +18,13 @@ from flwr.app import (
 from flwr.serverapp import Grid
 from flwr.serverapp.strategy import FedAvg
 
-from models.unet import instance_norm_state_keys
-
+from models.unet import instance_norm_state_keys, output_conv_state_keys
+from .r3edar import (
+    OUTPUT_REGIONS,
+    aggregate_r3edar_layers,
+    compute_global_proportions,
+    compute_regional_weights,
+)
 
 PROFILE_BINS = 10
 REGIONS = ("wt", "tc", "et")
@@ -124,6 +129,12 @@ class FedINDARStrategy(FedAvg):
         self.round_audit: list[dict[str, Any]] = []
 
         self._global_state: dict[str, torch.Tensor] | None = None
+
+        # FedIN-R3EDAR Aggregation parameters
+        self.redar_kappa = float(kwargs.get("redar_kappa", 0.1))
+        self.redar_gamma = float(kwargs.get("redar_gamma", 1.0))
+        self.fedr3_warmup_round = int(kwargs.get("fedr3_warmup_round", 2))
+        self.output_weight_key, self.output_bias_key = output_conv_state_keys()
 
     def _messages_with_client_config(
         self,
@@ -301,7 +312,8 @@ class FedINDARStrategy(FedAvg):
             / max(values.sum(), _EPS)
             for region, values in global_profile.items()
         }
-                # FedIN-R3EDAR (Module 1): keep global profile for EMD-guided selection
+
+        # FedIN-R3EDAR (Module 1): keep global profile for EMD-guided selection
         self.global_profile = {
             region: values.copy()
             for region, values in global_profile.items()
@@ -375,12 +387,10 @@ class FedINDARStrategy(FedAvg):
             )
 
         # Calculate global class proportions pi_r = sum(q_k,r) / sum(N_k) across all clients
-        total_fed_fg = sum(self.total_foreground_by_node.values())
-        if total_fed_fg > 0:
-            self.global_proportions = {
-                r: sum(self.regional_voxels_by_node[nid][r] for nid in self.regional_voxels_by_node) / total_fed_fg
-                for r in ("ncr", "ed", "et")
-            }
+        self.global_proportions = compute_global_proportions(
+            self.regional_voxels_by_node,
+            self.total_foreground_by_node,
+        )
 
         self.profile_audit = [
             {
@@ -569,38 +579,33 @@ class FedINDARStrategy(FedAvg):
             else states[0]
         )
 
-        aggregated: dict[str, torch.Tensor] = {}
+        # --- FedIN-R3EDAR: Regional Reliability-Aware Aggregation ---
+        reliability_by_node = {
+            reply.metadata.src_node_id: {
+                r: float(reply.content["metrics"].get(f"reliability_{r}", 1.0))
+                for r in OUTPUT_REGIONS
+            }
+            for reply in replies
+        }
+        alpha_weights = compute_regional_weights(
+            node_ids=[reply.metadata.src_node_id for reply in replies],
+            reliability_by_node=reliability_by_node,
+            regional_voxels_by_node=self.regional_voxels_by_node,
+            total_foreground_by_node=self.total_foreground_by_node,
+            global_proportions=self.global_proportions,
+            use_reliability=(server_round > self.fedr3_warmup_round),
+            kappa=self.redar_kappa,
+            gamma=self.redar_gamma,
+        )
 
-        for name, reference_value in reference.items():
-
-            if (
-                name in self.local_in_keys
-                or not torch.is_floating_point(
-                    reference_value
-                )
-            ):
-                aggregated[name] = (
-                    reference_value
-                    .detach()
-                    .cpu()
-                    .clone()
-                )
-            else:
-                value = sum(
-                    float(weight)
-                    * state[name]
-                    .detach()
-                    .cpu()
-                    .to(torch.float64)
-                    for state, weight in zip(
-                        states,
-                        weights,
-                    )
-                )
-
-                aggregated[name] = value.to(
-                    dtype=reference_value.dtype
-                )
+        aggregated = aggregate_r3edar_layers(
+            reference=reference,
+            states=states,
+            sample_weights=weights,
+            alpha_weights=alpha_weights,
+            output_keys=(self.output_weight_key, self.output_bias_key),
+            local_in_keys=self.local_in_keys,
+        )
 
         self.round_audit.append(
             {
@@ -614,6 +619,9 @@ class FedINDARStrategy(FedAvg):
                 ],
                 "num_examples": counts.tolist(),
                 "aggregation_weights": weights.tolist(),
+                "alpha_weights_ncr": alpha_weights["ncr"].tolist(),
+                "alpha_weights_ed": alpha_weights["ed"].tolist(),
+                "alpha_weights_et": alpha_weights["et"].tolist(),
                 "profile_mu": [
                     float(
                         self.profile_mu_by_node[

@@ -72,6 +72,11 @@ collaborator-fraction = 0.2
 collaborator-selector-seed = 42
 emd-staleness-weight = 0.1
 
+# FedIN-R3EDAR Aggregation Hyperparameters (REDAR regional support & FedR3 reliability)
+redar-kappa = 0.1
+redar-gamma = 1.0
+fedr3-reliability-warmup = 2
+
 # RegSimAgg Hyperparameters (Temporal Damping & Distance Metric)
 regsimagg-regularization-round = 10
 regsimagg-distance-mode = "paper_l1"

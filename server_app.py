@@ -60,6 +60,15 @@ def main(grid: Grid, context: Context) -> None:
         strategy_kwargs["max_mu"] = float(
             context.run_config.get("fedindar-max-mu", 0.1)
         )
+        strategy_kwargs["redar_kappa"] = float(
+            context.run_config.get("redar-kappa", 0.1)
+        )
+        strategy_kwargs["redar_gamma"] = float(
+            context.run_config.get("redar-gamma", 1.0)
+        )
+        strategy_kwargs["fedr3_warmup_round"] = int(
+            context.run_config.get("fedr3-reliability-warmup", 2)
+        )
 
     strategy = get_strategy(algorithm, context=context, **strategy_kwargs)
     print(f"\n[Server] ---> Starting Federated Training ({algorithm.upper()}) for {num_rounds} rounds...", flush=True)
