@@ -44,3 +44,28 @@ def instance_norm_state_keys() -> set[str]:
 
     _CACHED_IN_KEYS = keys
     return keys
+
+
+_CACHED_OUTPUT_KEYS: tuple[str, str | None] | None = None
+
+def output_conv_state_keys() -> tuple[str, str | None]:
+    """Return the state_dict keys for the final 4-class output convolution."""
+
+    global _CACHED_OUTPUT_KEYS
+    if _CACHED_OUTPUT_KEYS is not None:
+        return _CACHED_OUTPUT_KEYS
+
+    model = UNetModel().build()
+    weight_key, bias_key = None, None
+
+    for module_name, module in model.named_modules():
+        if isinstance(module, torch.nn.modules.conv._ConvNd) and getattr(module, "out_channels", None) == 4:
+            prefix = f"{module_name}." if module_name else ""
+            weight_key = f"{prefix}weight"
+            bias_key = f"{prefix}bias" if module.bias is not None else None
+
+    if weight_key is None:
+        raise RuntimeError("Could not locate the final 4-channel output convolution in UNet.")
+
+    _CACHED_OUTPUT_KEYS = (weight_key, bias_key)
+    return _CACHED_OUTPUT_KEYS
