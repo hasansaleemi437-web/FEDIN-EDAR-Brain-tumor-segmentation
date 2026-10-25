@@ -14,6 +14,7 @@ from utils.summary import append_client_history
 from utils.communication import measure_model_payload
 
 from models.unet import instance_norm_state_keys
+from algorithms.reliability import compute_smoothed_reliability
 from algorithms.fedindar import (
     PROFILE_BINS,
     REGIONS,
@@ -225,16 +226,31 @@ def train(msg: Message, context: Context):
 
     print(f"[Client {partition_id}] ---> Training completed! Loss: {train_loss:.4f}", flush=True)
 
-    state = context.state.get("client_state", ConfigRecord({}))
+    state = dict(context.state.get("client_state", ConfigRecord({})))
     current_round = int(state.get("current_round", 1))
     current_round = int(config.get("server-round", current_round))
     append_client_history(
         context.run_id, algorithm, current_round, partition_id, "train",
         len(trainloader.dataset), float(train_loss), train_time_sec,
     )
+
+    # FedIN-R3EDAR: Estimate regional reliability with EMA smoothing (12 bytes)
+    rel_scores = {"reliability_ncr": 1.0, "reliability_ed": 1.0, "reliability_et": 1.0}
+    if is_fedindar:
+        rel_scores = compute_smoothed_reliability(
+            model=model,
+            dataloader=trainloader,
+            device=device,
+            client_state=state,
+            ema_alpha=float(config.get("fedr3-ema-alpha", 0.3)),
+        )
+
     context.state["client_state"] = ConfigRecord({
         "last_train_loss": float(train_loss),
         "current_round": current_round,
+        "ema_rel_ncr": float(state.get("ema_rel_ncr", 1.0)),
+        "ema_rel_ed": float(state.get("ema_rel_ed", 1.0)),
+        "ema_rel_et": float(state.get("ema_rel_et", 1.0)),
     })
 
     # Return updated model and training metrics
@@ -242,6 +258,7 @@ def train(msg: Message, context: Context):
     metrics = {
         "train_loss": train_loss,
         "num-examples": len(trainloader.dataset),
+        **rel_scores,
         **measure_model_payload(model),
     }
 
