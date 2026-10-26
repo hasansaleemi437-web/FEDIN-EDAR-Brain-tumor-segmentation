@@ -104,7 +104,8 @@ def load_data(partition_id: int, context):
 def load_centralized_dataset():
     """Load test set and return dataloader."""
     # Load entire test set
-    loader = get_loader()
+    # Reuse the loader built with the run config (data-root / partition-csv overrides
+    loader = _LOADER if _LOADER is not None else get_loader()
     return loader.load_global_test(batch_size=1)
 
 def test(net: torch.nn.Module, testloader, device: torch.device) -> dict[str, float]:
