@@ -87,6 +87,9 @@ class FedINDARStrategy(FedAvg):
         temporal_beta: float = 0.5,
         min_mu: float = 0.001,
         max_mu: float = 0.1,
+        redar_kappa: float = 0.1,
+        redar_gamma: float = 1.0,
+        fedr3_warmup_round: int = 2,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -131,9 +134,9 @@ class FedINDARStrategy(FedAvg):
         self._global_state: dict[str, torch.Tensor] | None = None
 
         # FedIN-R3EDAR Aggregation parameters
-        self.redar_kappa = float(kwargs.get("redar_kappa", 0.1))
-        self.redar_gamma = float(kwargs.get("redar_gamma", 1.0))
-        self.fedr3_warmup_round = int(kwargs.get("fedr3_warmup_round", 2))
+        self.redar_kappa = float(redar_kappa)
+        self.redar_gamma = float(redar_gamma)
+        self.fedr3_warmup_round = int(fedr3_warmup_round)
         self.output_weight_key, self.output_bias_key = output_conv_state_keys()
 
     def _messages_with_client_config(
