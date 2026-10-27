@@ -89,6 +89,8 @@ class FedINDARStrategy(FedAvg):
         max_mu: float = 0.1,
         redar_kappa: float = 0.1,
         redar_gamma: float = 1.0,
+        reliability_mu_enabled: bool = False,
+        reliability_mu_lambda: float = 2.0,
         fedr3_warmup_round: int = 2,
         **kwargs: Any,
     ) -> None:
@@ -136,6 +138,9 @@ class FedINDARStrategy(FedAvg):
         # FedIN-R3EDAR Aggregation parameters
         self.redar_kappa = float(redar_kappa)
         self.redar_gamma = float(redar_gamma)
+        # FedIN-R3EDAR: reliability-aware proximal mu (default OFF)
+        self.reliability_mu_enabled = bool(reliability_mu_enabled)
+        self.reliability_mu_lambda = float(reliability_mu_lambda)
         self.fedr3_warmup_round = int(fedr3_warmup_round)
         self.output_weight_key, self.output_bias_key = output_conv_state_keys()
 
@@ -532,7 +537,48 @@ class FedINDARStrategy(FedAvg):
             normalized,
             next_mu,
         )
+    def _reliability_adjust_mu(
+        self,
+        server_round: int,
+        replies: list[Message],
+        next_mu: np.ndarray,
+    ) -> np.ndarray:
 
+        # FedIN-R3EDAR (reliability-aware mu): lower reliability -> higher proximal mu
+        if (
+            not self. reliability_mu_enabled
+            or server_round <= self.fedr3_warmup_round
+        ):
+            return next_mu
+
+        rho = np.asarray(
+            [
+                np.mean(
+                    [
+                        float(
+                            reply.content["metrics"].get(
+                                f"reliability_{r}", 1.0
+                            )
+                        )
+                        for r in OUTPUT_REGIONS
+                    ]
+                )
+                for reply in replies
+            ],
+            dtype=np.float64,
+        )
+
+        adjusted = np.clip(
+            next_mu * np.exp(self.reliability_mu_lambda * (rho.mean() - rho)),
+            self.min_mu,
+            self.max_mu,
+        )
+
+        for reply, mu in zip(replies, adjusted):
+            self.mu_by_node[reply.metadata.src_node_id] = float(mu)
+
+        return adjusted
+    
     def _aggregate_shared_layers(
         self,
         server_round: int,
@@ -574,6 +620,12 @@ class FedINDARStrategy(FedAvg):
         ) = self._next_round_penalties(
             replies,
             divergences,
+        )
+        # FedIN-R3EDAR (reliability-aware mu): reliability-aware mu adjustment
+        next_mu = self._reliability_adjust_mu(
+            server_round,
+            replies,
+            next_mu,
         )
 
         reference = (

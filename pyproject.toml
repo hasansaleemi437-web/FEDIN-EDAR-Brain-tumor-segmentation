@@ -76,6 +76,8 @@ emd-staleness-weight = 0.1
 redar-kappa = 0.1
 redar-gamma = 1.0
 fedr3-reliability-warmup = 2
+reliability-mu-enabled = false
+reliability-mu-lambda = 2.0
 
 # RegSimAgg Hyperparameters (Temporal Damping & Distance Metric)
 regsimagg-regularization-round = 10

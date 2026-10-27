@@ -69,7 +69,12 @@ def main(grid: Grid, context: Context) -> None:
         strategy_kwargs["fedr3_warmup_round"] = int(
             context.run_config.get("fedr3-reliability-warmup", 2)
         )
-
+        strategy_kwargs["reliability_mu_enabled"] = bool(
+            context.run_config.get("reliability-mu-enabled", False)
+        )
+        strategy_kwargs["reliability_mu_lambda"] = float(
+            context.run_config.get("reliability-mu-lambda", 2.0)
+        )
     strategy = get_strategy(algorithm, context=context, **strategy_kwargs)
     print(f"\n[Server] ---> Starting Federated Training ({algorithm.upper()}) for {num_rounds} rounds...", flush=True)
 
