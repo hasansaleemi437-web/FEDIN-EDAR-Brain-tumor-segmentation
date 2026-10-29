@@ -76,9 +76,17 @@ emd-staleness-weight = 0.1
 redar-kappa = 0.1
 redar-gamma = 1.0
 fedr3-reliability-warmup = 2
-reliability-mu-enabled = false
+reliability-mu-enabled = true
 reliability-mu-lambda = 2.0
 
 # RegSimAgg Hyperparameters (Temporal Damping & Distance Metric)
 regsimagg-regularization-round = 10
 regsimagg-distance-mode = "paper_l1"
+
+
+# Annotation (label) noise for noisy-label experiments
+noise-enabled = true
+noise-seed = 42
+noise-client-fraction = 0.3
+noise-level-low = 0.1
+noise-level-high = 0.4

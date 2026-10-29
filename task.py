@@ -11,9 +11,10 @@ from datasets_loaders import create_dataset
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
 from utils.metrics import fets_region_metrics
-
+from label_noise import apply_label_noise
 _LOADER = None
 _LOADER_KEY = None
+
 
 
 def get_loader(context=None):
@@ -99,7 +100,8 @@ def get_loader(context=None):
 def load_data(partition_id: int, context):
     loader = get_loader(context)
     batch_size = int(context.run_config.get("batch-size", 1))
-    return loader.load_partition(partition_id=partition_id, batch_size=batch_size)
+    out = loader.load_partition(partition_id=partition_id, batch_size=batch_size)
+    return apply_label_noise(out, partition_id, context.run_config)
 
 def load_centralized_dataset():
     """Load test set and return dataloader."""
