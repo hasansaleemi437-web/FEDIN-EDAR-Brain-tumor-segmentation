@@ -76,10 +76,6 @@ class NoisyLabelDataset(Dataset):
         t = torch.as_tensor(item["label"])
         has_ch = t.dim() == 4
         m = corrupt_mask((t[0] if has_ch else t).long(), self.plan, s)
-        if not getattr(NoisyLabelDataset, "_printed", False):
-         NoisyLabelDataset._printed = True
-        orig = (t[0] if has_ch else t).long()
-        print(f"[noise] client {self.pid}: {(m != orig).float().mean().item()*100:.3f}% voxels changed", flush=True)
         item["label"] = (m.unsqueeze(0) if has_ch else m).to(t.dtype)
         return item
 
