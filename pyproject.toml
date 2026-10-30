@@ -19,6 +19,7 @@ dependencies = [
     "scipy==1.17.1",
     "numpy==2.4.1",
     "pytest>=8.0.0",
+    "wandb>=0.17.0",
 ]
 
 #[tool.uv.sources]
@@ -82,6 +83,9 @@ reliability-mu-lambda = 2.0
 # RegSimAgg Hyperparameters (Temporal Damping & Distance Metric)
 regsimagg-regularization-round = 10
 regsimagg-distance-mode = "paper_l1"
+
+# Weights & Biases Logging
+use-wandb = true
 
 
 # Annotation (label) noise for noisy-label experiments

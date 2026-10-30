@@ -7,6 +7,7 @@ from task import get_loader, run_global_benchmark
 from algorithms.server_strategies import get_strategy
 from models import create_model
 from utils.summary import merge_client_history, save_round_summary
+from utils.wandb_logger import init_wandb, finish_wandb
 
 
 # Create ServerApp
@@ -78,6 +79,14 @@ def main(grid: Grid, context: Context) -> None:
     strategy = get_strategy(algorithm, context=context, **strategy_kwargs)
     print(f"\n[Server] ---> Starting Federated Training ({algorithm.upper()}) for {num_rounds} rounds...", flush=True)
 
+    # Initialize W&B tracking upfront before Round 1 starts
+    init_wandb(
+        context=context,
+        algorithm=algorithm,
+        model_name=model_name,
+        num_rounds=num_rounds,
+    )
+
     # Start strategy
     train_cfg = {
         "lr": lr,
@@ -122,4 +131,15 @@ def main(grid: Grid, context: Context) -> None:
     # Run global benchmark on unseen test set after training completes
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     global_model.load_state_dict(result.arrays.to_torch_state_dict())
-    run_global_benchmark(global_model, device, algorithm=algorithm)
+    benchmark_metrics = run_global_benchmark(global_model, device, algorithm=algorithm)
+
+    # Log complete experiment results, curves, tables, plots, and models to W&B
+    finish_wandb(
+        context=context,
+        result=result,
+        algorithm=algorithm,
+        model_name=model_name,
+        num_rounds=num_rounds,
+        history_csv=history_csv,
+        benchmark_metrics=benchmark_metrics,
+    )

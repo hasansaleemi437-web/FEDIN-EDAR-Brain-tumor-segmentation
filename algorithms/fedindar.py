@@ -166,6 +166,7 @@ class FedINDARStrategy(FedAvg):
                     flush=True,
                 )
                 self.mu_by_node[node_id] = self.base_mu
+                self.profile_mu_by_node[node_id] = self.base_mu
 
             node_config = ConfigRecord(dict(config))
 
@@ -507,9 +508,10 @@ class FedINDARStrategy(FedAvg):
 
         profile_mu = np.asarray(
             [
-                self.profile_mu_by_node[
-                    reply.metadata.src_node_id
-                ]
+                self.profile_mu_by_node.get(
+                    reply.metadata.src_node_id,
+                    self.base_mu,
+                )
                 for reply in replies
             ]
         )
@@ -546,8 +548,8 @@ class FedINDARStrategy(FedAvg):
 
         # FedIN-R3EDAR (reliability-aware mu): lower reliability -> higher proximal mu
         if (
-            not self. reliability_mu_enabled
-            or server_round <= self.fedr3_warmup_round
+            not self.reliability_mu_enabled
+            or (server_round - 1) <= self.fedr3_warmup_round
         ):
             return next_mu
 
@@ -648,7 +650,7 @@ class FedINDARStrategy(FedAvg):
             regional_voxels_by_node=self.regional_voxels_by_node,
             total_foreground_by_node=self.total_foreground_by_node,
             global_proportions=self.global_proportions,
-            use_reliability=(server_round > self.fedr3_warmup_round),
+            use_reliability=((server_round - 1) > self.fedr3_warmup_round),
             kappa=self.redar_kappa,
             gamma=self.redar_gamma,
         )
@@ -679,9 +681,10 @@ class FedINDARStrategy(FedAvg):
                 "alpha_weights_et": alpha_weights["et"].tolist(),
                 "profile_mu": [
                     float(
-                        self.profile_mu_by_node[
-                            reply.metadata.src_node_id
-                        ]
+                        self.profile_mu_by_node.get(
+                            reply.metadata.src_node_id,
+                            self.base_mu,
+                        )
                     )
                     for reply in replies
                 ],
@@ -720,8 +723,13 @@ class FedINDARStrategy(FedAvg):
             # Keep global model for next round
             self._global_state = arrays.to_torch_state_dict()
 
-            return arrays, metrics
+            try:
+                from utils.wandb_logger import log_live_round_metrics
+                log_live_round_metrics(server_round, dict(metrics) if metrics else {}, phase="train")
+            except Exception:
+                pass
 
+            return arrays, metrics
         arrays = self._aggregate_shared_layers(
             server_round,
             valid,
@@ -730,13 +738,68 @@ class FedINDARStrategy(FedAvg):
         # Update global model after aggregation
         self._global_state = arrays.to_torch_state_dict()
 
+        train_metrics = self.train_metrics_aggr_fn(
+            [
+                reply.content
+                for reply in valid
+            ],
+            self.weighted_by_key,
+        )
+
+        try:
+            from utils.wandb_logger import log_live_round_metrics
+            log_live_round_metrics(server_round, dict(train_metrics) if train_metrics else {}, phase="train")
+        except Exception:
+            pass
+
         return (
             arrays,
-            self.train_metrics_aggr_fn(
-                [
-                    reply.content
-                    for reply in valid
-                ],
-                self.weighted_by_key,
-            ),
+            train_metrics,
         )
+
+
+    def aggregate_evaluate(
+        self,
+        server_round: int,
+        replies: Iterable[Message],
+    ) -> MetricRecord | None:
+        valid, _ = self._check_and_log_replies(replies, is_train=False)
+        if not valid:
+            return None
+
+        total_examples = 0.0
+        aggregated_metrics: dict[str, float] = {}
+
+        for reply in valid:
+            metrics = reply.content.get("metrics")
+            if not metrics:
+                continue
+            num_ex = float(metrics.get("num-examples", 1.0))
+            total_examples += num_ex
+
+            for k, v in metrics.items():
+                if k == "num-examples":
+                    continue
+                try:
+                    val = float(v)
+                    if not np.isnan(val):
+                        aggregated_metrics[k] = aggregated_metrics.get(k, 0.0) + val * num_ex
+                except (ValueError, TypeError):
+                    pass
+
+        if total_examples > 0:
+            for k in aggregated_metrics:
+                aggregated_metrics[k] /= total_examples
+            aggregated_metrics["num-examples"] = float(total_examples)
+
+            dices = [aggregated_metrics[k] for k in ("dice_et", "dice_tc", "dice_wt") if k in aggregated_metrics]
+            if len(dices) == 3:
+                aggregated_metrics["dice_mean"] = sum(dices) / 3.0
+
+        try:
+            from utils.wandb_logger import log_live_round_metrics
+            log_live_round_metrics(server_round, aggregated_metrics, phase="eval")
+        except Exception:
+            pass
+
+        return MetricRecord(aggregated_metrics)
