@@ -245,13 +245,10 @@ def train(msg: Message, context: Context):
             ema_alpha=float(config.get("fedr3-ema-alpha", 0.3)),
         )
 
-    context.state["client_state"] = ConfigRecord({
-        "last_train_loss": float(train_loss),
-        "current_round": current_round,
-        "ema_rel_ncr": float(state.get("ema_rel_ncr", 1.0)),
-        "ema_rel_ed": float(state.get("ema_rel_ed", 1.0)),
-        "ema_rel_et": float(state.get("ema_rel_et", 1.0)),
-    })
+    state_dict = dict(state)
+    state_dict["last_train_loss"] = float(train_loss)
+    state_dict["current_round"] = int(current_round)
+    context.state["client_state"] = ConfigRecord(state_dict)
 
     # Return updated model and training metrics
     model_record = ArrayRecord(model.state_dict())
@@ -330,10 +327,10 @@ def evaluate(msg: Message, context: Context):
         eval_time_sec, eval_metrics,
     )
 
-    context.state["client_state"] = ConfigRecord({
-        "last_train_loss": train_loss,
-        "current_round": current_round + 1,
-    })
+    state_dict = dict(state)
+    state_dict["last_train_loss"] = float(train_loss)
+    state_dict["current_round"] = int(current_round + 1)
+    context.state["client_state"] = ConfigRecord(state_dict)
 
     # Return evaluation metrics
     metrics = {

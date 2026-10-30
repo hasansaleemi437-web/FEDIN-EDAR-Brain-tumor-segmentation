@@ -1,7 +1,7 @@
 """FedR3: Region-Wise Annotation Reliability Estimation.
 
 Estimates hospital label reliability rho_{k,r} in [0, 1] separately for
-NCR/NET, ED, and ET using PyTorch built-in Categorical entropy and Dice disagreement:
+NCR/NET, ED, and ET using direct Shannon entropy and Dice disagreement:
 
     rho_{k,r} = EMA[ exp(-a * D_{k,r} - b * H_{k,r}) ]
 """
@@ -23,51 +23,56 @@ def estimate_local_reliability(
     a: float = 1.0,
     b: float = 1.0,
 ) -> dict[str, float]:
-    """Estimate region-wise annotation reliability rho_{k,r} in [0, 1] using PyTorch built-ins.
+    """Estimate region-wise annotation reliability rho_{k,r} in [0, 1].
 
     For region r:
         D_{k,r} = 1 - Dice(pred_r, label_r) is label disagreement
         H_{k,r} = normalized Shannon entropy of class probabilities
         rho_{k,r} = exp(-a * D_{k,r} - b * H_{k,r})
     """
+    was_training = model.training
     model.eval()
+
     entropy_acc = {r: 0.0 for r in OUTPUT_REGIONS}
     disagreement_acc = {r: 0.0 for r in OUTPUT_REGIONS}
     region_count = {r: 0 for r in OUTPUT_REGIONS}
 
-    with torch.no_grad():
-        for i, batch in enumerate(dataloader):
-            if i >= max_batches:
-                break
-            images = batch["image"].to(device)
-            labels = batch["label"].to(device).long()
-            if labels.ndim == 5:
-                labels = labels[:, 0]
+    try:
+        with torch.no_grad():
+            for i, batch in enumerate(dataloader):
+                if i >= max_batches:
+                    break
+                images = batch["image"].to(device)
+                labels = batch["label"].to(device).long()
+                if labels.ndim == 5:
+                    labels = labels[:, 0]
 
-            logits = model(images)
-            probs = torch.softmax(logits, dim=1)  # [B, 4, D, H, W]
-            preds = torch.argmax(probs, dim=1)
+                logits = model(images)
+                log_probs = torch.log_softmax(logits, dim=1)  # [B, 4, D, H, W]
+                preds = torch.argmax(log_probs, dim=1)
+                probs = torch.exp(log_probs)
 
-            # PyTorch built-in: Shannon entropy per voxel
-            # Shape [B, 4, D, H, W] -> permute to [B, D, H, W, 4] for Categorical
-            dist = torch.distributions.Categorical(probs=probs.permute(0, 2, 3, 4, 1))
-            norm_entropy = dist.entropy() / np.log(4.0)  # normalized to [0, 1]
+                # Direct normalized Shannon entropy per voxel: -sum(p * log p) / log(4)
+                # Avoids expensive 5D tensor transposition/copying and categorical simplex errors
+                norm_entropy = -(probs * log_probs).sum(dim=1) / np.log(4.0)
 
-            for class_idx, name in CLASS_TO_REGION.items():
-                target_mask = (labels == class_idx)
-                pred_mask = (preds == class_idx)
-                union_mask = target_mask | pred_mask
+                for class_idx, name in CLASS_TO_REGION.items():
+                    target_mask = (labels == class_idx)
+                    pred_mask = (preds == class_idx)
+                    union_mask = target_mask | pred_mask
 
-                if union_mask.sum() > 0:
-                    h_val = float(norm_entropy[union_mask].mean().item())
-                    intersection = float((target_mask & pred_mask).sum().item())
-                    total = float(target_mask.sum().item() + pred_mask.sum().item())
-                    dice = (2.0 * intersection) / max(total, 1.0)
-                    d_val = 1.0 - dice
+                    if union_mask.sum() > 0:
+                        h_val = float(norm_entropy[union_mask].mean().item())
+                        intersection = float((target_mask & pred_mask).sum().item())
+                        total = float(target_mask.sum().item() + pred_mask.sum().item())
+                        dice = (2.0 * intersection) / max(total, 1.0)
+                        d_val = 1.0 - dice
 
-                    entropy_acc[name] += h_val
-                    disagreement_acc[name] += d_val
-                    region_count[name] += 1
+                        entropy_acc[name] += h_val
+                        disagreement_acc[name] += d_val
+                        region_count[name] += 1
+    finally:
+        model.train(was_training)
 
     scores = {}
     for r in OUTPUT_REGIONS:
@@ -106,9 +111,13 @@ def compute_smoothed_reliability(
 
     result = {}
     for r in OUTPUT_REGIONS:
-        prev_ema = float(client_state.get(f"ema_rel_{r}", 1.0))
-        updated_ema = (1.0 - ema_alpha) * prev_ema + ema_alpha * raw_scores[r]
-        client_state[f"ema_rel_{r}"] = float(updated_ema)
-        result[f"reliability_{r}"] = float(updated_ema)
+        key = f"ema_rel_{r}"
+        prev_ema = client_state.get(key)
+        if prev_ema is None:
+            updated_ema = float(raw_scores[r])
+        else:
+            updated_ema = float((1.0 - ema_alpha) * float(prev_ema) + ema_alpha * raw_scores[r])
+        client_state[key] = updated_ema
+        result[f"reliability_{r}"] = updated_ema
 
     return result
