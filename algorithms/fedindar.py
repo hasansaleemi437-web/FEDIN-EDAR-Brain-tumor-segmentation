@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Iterable
 from typing import Any
 
@@ -150,6 +151,7 @@ class FedINDARStrategy(FedAvg):
         arrays: ArrayRecord,
         config: ConfigRecord,
         profile_only: bool,
+        server_round: int = 1,
     ) -> list[Message]:
         messages: list[Message] = []
 
@@ -169,7 +171,7 @@ class FedINDARStrategy(FedAvg):
                 self.profile_mu_by_node[node_id] = self.base_mu
 
             node_config = ConfigRecord(dict(config))
-
+            node_config["server-round"] = int(server_round)
             node_config["fedindar-enabled"] = True
             node_config["fedindar-profile-only"] = profile_only
             node_config["proximal_mu"] = float(
@@ -179,18 +181,9 @@ class FedINDARStrategy(FedAvg):
                 )
             )
 
-            messages.append(
-                Message(
-                    content=RecordDict(
-                        {
-                            self.arrayrecord_key: arrays,
-                            self.configrecord_key: node_config,
-                        }
-                    ),
-                    message_type=MessageType.TRAIN,
-                    dst_node_id=node_id,
-                )
-            )
+            base.content[self.arrayrecord_key] = arrays
+            base.content[self.configrecord_key] = node_config
+            messages.append(base)
 
         return messages
 
@@ -215,6 +208,7 @@ class FedINDARStrategy(FedAvg):
             arrays,
             config,
             profile_only=(server_round == 1),
+            server_round=server_round,
         )
 
     def configure_evaluate(
@@ -244,22 +238,13 @@ class FedINDARStrategy(FedAvg):
 
         for base in base_messages:
             node_config = ConfigRecord(dict(config))
-
+            node_config["server-round"] = int(server_round)
             node_config["fedindar-enabled"] = True
             node_config["fedindar-final-test"] = final_test
 
-            messages.append(
-                Message(
-                    content=RecordDict(
-                        {
-                            self.arrayrecord_key: arrays,
-                            self.configrecord_key: node_config,
-                        }
-                    ),
-                    message_type=MessageType.EVALUATE,
-                    dst_node_id=base.metadata.dst_node_id,
-                )
-            )
+            base.content[self.arrayrecord_key] = arrays
+            base.content[self.configrecord_key] = node_config
+            messages.append(base)
 
         return messages
 
@@ -364,13 +349,22 @@ class FedINDARStrategy(FedAvg):
 
             # FedIN-R3EDAR: record regional voxel counts from client metrics
             m = reply.content["metrics"]
-            node_fg = float(m.get("total_foreground_voxels", 1.0))
-            self.total_foreground_by_node[node_id] = node_fg
-            self.regional_voxels_by_node[node_id] = {
+            regional = {
                 "ncr": float(m.get("voxel_count_ncr", 0.0)),
                 "ed": float(m.get("voxel_count_ed", 0.0)),
                 "et": float(m.get("voxel_count_et", 0.0)),
             }
+            sum_regional = sum(regional.values())
+            raw_fg = m.get("total_foreground_voxels")
+            if raw_fg is not None and float(raw_fg) > 0:
+                node_fg = float(raw_fg)
+            elif sum_regional > 0:
+                node_fg = sum_regional
+            else:
+                print(f"[FedIN-R3EDAR] Warning: node {node_id} reported 0 foreground voxels, defaulting to 1.0", flush=True)
+                node_fg = 1.0
+            self.total_foreground_by_node[node_id] = node_fg
+            self.regional_voxels_by_node[node_id] = regional
 
             # FedIN-R3EDAR (Module 1): keep profile and sample count per node
             self.profile_by_node[node_id] = {
@@ -637,13 +631,16 @@ class FedINDARStrategy(FedAvg):
         )
 
         # --- FedIN-R3EDAR: Regional Reliability-Aware Aggregation ---
-        reliability_by_node = {
-            reply.metadata.src_node_id: {
-                r: float(reply.content["metrics"].get(f"reliability_{r}", 1.0))
-                for r in OUTPUT_REGIONS
-            }
-            for reply in replies
-        }
+        reliability_by_node = {}
+        for reply in replies:
+            node_rel = {}
+            for r in OUTPUT_REGIONS:
+                val = reply.content["metrics"].get(f"reliability_{r}")
+                if val is None:
+                    print(f"[FedIN-R3EDAR] Warning: node {reply.metadata.src_node_id} missing reliability_{r}, defaulting to 1.0", flush=True)
+                    val = 1.0
+                node_rel[r] = float(val)
+            reliability_by_node[reply.metadata.src_node_id] = node_rel
         alpha_weights = compute_regional_weights(
             node_ids=[reply.metadata.src_node_id for reply in replies],
             reliability_by_node=reliability_by_node,
@@ -698,7 +695,7 @@ class FedINDARStrategy(FedAvg):
             }
         )
 
-        return ArrayRecord(aggregated)
+        return ArrayRecord(OrderedDict(aggregated))
 
     def aggregate_train(
         self,
