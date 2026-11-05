@@ -16,6 +16,11 @@ class BaseDatasetLoader(ABC):
         pass
 
     @abstractmethod
+    def load_partition_test(self, partition_id: int, batch_size: int = 1):
+        """Return DataLoader for the unseen test set of a specific client institution."""
+        pass
+
+    @abstractmethod
     def load_global_test(self, batch_size: int = 1):
         """Return DataLoader for the unseen centralized/global test set."""
         pass

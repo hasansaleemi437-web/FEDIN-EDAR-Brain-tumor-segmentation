@@ -8,7 +8,8 @@ from algorithms.server_strategies import get_strategy
 from models import create_model
 from utils.summary import merge_client_history, save_round_summary
 from utils.wandb_logger import init_wandb, finish_wandb
-
+from utils.plot import generate_all_paper_figures
+from utils.communication import audit_communication_cost
 
 # Create ServerApp
 app = ServerApp()
@@ -103,15 +104,12 @@ def main(grid: Grid, context: Context) -> None:
 
     # Audit FeTS-standard communication cost
     try:
-        from utils.communication import audit_communication_cost
         audit_communication_cost(history_csv, num_rounds, context)
     except Exception as exc:
         print(f"[Server] Communication audit skipped: {exc}", flush=True)
 
     # Generate paper figures automatically once all client-history rows are merged.
     try:
-        from utils.plot import generate_all_paper_figures
-
         generate_all_paper_figures(history_csv)
     except Exception as exc:
         print(

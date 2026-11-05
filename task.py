@@ -160,18 +160,79 @@ def test(net: torch.nn.Module, testloader, device: torch.device) -> dict[str, fl
     count = max(len(testloader), 1)
     return {k: round(v / count, 4) for k, v in totals.items()}
 
+def restore_local_instance_norm(model: torch.nn.Module, partition_id: int, device: torch.device) -> bool:
+    """Restore client local InstanceNorm parameters from disk if previously saved."""
+    local_in_file = Path("artifacts/local_instance_norm") / f"client_{partition_id}.pt"
+    if local_in_file.exists():
+        try:
+            local_in_state = torch.load(local_in_file, map_location="cpu")
+            if isinstance(local_in_state, dict):
+                state = model.state_dict()
+                for key, value in local_in_state.items():
+                    if key in state and isinstance(value, torch.Tensor):
+                        state[key].copy_(value.to(device))
+                return True
+        except Exception:
+            return False
+    return False
+
+
 def run_global_benchmark(model: torch.nn.Module, device: torch.device, algorithm: str = "fedavg") -> dict[str, float]:
     """Run one-off final benchmark on the unseen global test set and save to artifacts."""
     print(f"\n[Server] ---> Running Final Benchmark on Unseen Test Set ({algorithm.upper()})...", flush=True)
 
-    test_dataloader = load_centralized_dataset()
-    eval_metrics = test(model, test_dataloader, device)
+    loader = _LOADER if _LOADER is not None else get_loader()
+    groups = loader._get_partitioned_groups()
+    is_fedindar = (algorithm.lower() == "fedindar")
+    base_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
+    weighted_totals = {}
+    macro_totals = {}
+    total_count = 0
+    client_count = 0
+    for pid in range(len(groups)):
+        client_testloader = loader.load_partition_test(partition_id=pid, batch_size=1)
+        if len(client_testloader.dataset) == 0:
+            continue
+        model.load_state_dict(base_state)
+        if is_fedindar:
+            restored = restore_local_instance_norm(model, pid, device)
+            in_status = "restored local InstanceNorm" if restored else "using global InstanceNorm"
+        else:
+            in_status = "global weights"
+        client_metrics = test(model, client_testloader, device)
+        n = len(client_testloader.dataset)
+        total_count += n
+        client_count += 1
+        print(
+            f"[Server] ---> Client {pid} [{in_status}] | Cases: {n} | "
+            f"Dice (ET/TC/WT): {client_metrics.get('dice_et', 0.0):.4f} / {client_metrics.get('dice_tc', 0.0):.4f} / {client_metrics.get('dice_wt', 0.0):.4f}",
+            flush=True,
+        )
+        for k, v in client_metrics.items():
+            weighted_totals[k] = weighted_totals.get(k, 0.0) + v * n
+            macro_totals[k] = macro_totals.get(k, 0.0) + v
+
+    model.load_state_dict(base_state)
+
+    if total_count == 0:
+        print("[Server] Warning: No unseen test cases found.", flush=True)
+        return {}
+
+    # Sample-weighted (micro) aggregation across all test subjects
+    eval_metrics = {k: round(v / total_count, 4) for k, v in weighted_totals.items()}
+    # Equal-site (macro) mean across all client institutions
+    macro_metrics = {f"macro_{k}": round(v / client_count, 4) for k, v in macro_totals.items()}
+    eval_metrics.update(macro_metrics)
 
     print(
-        f"[Server] ---> Final Test Results | "
-        f"Loss: {eval_metrics.get('eval_loss', 0.0):.4f} | "
+        f"\n[Server] ---> Final Test Results ({algorithm.upper()}) | Total Cases: {total_count} | Institutions: {client_count}\n"
+        f"         Micro (Sample-Weighted) | Loss: {eval_metrics.get('eval_loss', 0.0):.4f} | "
         f"Dice (ET/TC/WT): {eval_metrics.get('dice_et', 0.0):.4f} / {eval_metrics.get('dice_tc', 0.0):.4f} / {eval_metrics.get('dice_wt', 0.0):.4f} | "
-        f"HD95 (ET/TC/WT): {eval_metrics.get('hd95_et', 0.0):.2f} / {eval_metrics.get('hd95_tc', 0.0):.2f} / {eval_metrics.get('hd95_wt', 0.0):.2f}",
+        f"HD95 (ET/TC/WT): {eval_metrics.get('hd95_et', 0.0):.2f} / {eval_metrics.get('hd95_tc', 0.0):.2f} / {eval_metrics.get('hd95_wt', 0.0):.2f}\n"
+        f"         Macro (Equal-Site Mean) | Loss: {eval_metrics.get('macro_eval_loss', 0.0):.4f} | "
+        f"Dice (ET/TC/WT): {eval_metrics.get('macro_dice_et', 0.0):.4f} / {eval_metrics.get('macro_dice_tc', 0.0):.4f} / {eval_metrics.get('macro_dice_wt', 0.0):.4f} | "
+        f"HD95 (ET/TC/WT): {eval_metrics.get('macro_hd95_et', 0.0):.2f} / {eval_metrics.get('macro_hd95_tc', 0.0):.2f} / {eval_metrics.get('macro_hd95_wt', 0.0):.2f}",
         flush=True,
     )
 
@@ -190,6 +251,12 @@ def run_global_benchmark(model: torch.nn.Module, device: torch.device, algorithm
         "hd95_et": eval_metrics.get("hd95_et", 0.0),
         "hd95_tc": eval_metrics.get("hd95_tc", 0.0),
         "hd95_wt": eval_metrics.get("hd95_wt", 0.0),
+        "macro_dice_et": eval_metrics.get("macro_dice_et", 0.0),
+        "macro_dice_tc": eval_metrics.get("macro_dice_tc", 0.0),
+        "macro_dice_wt": eval_metrics.get("macro_dice_wt", 0.0),
+        "macro_hd95_et": eval_metrics.get("macro_hd95_et", 0.0),
+        "macro_hd95_tc": eval_metrics.get("macro_hd95_tc", 0.0),
+        "macro_hd95_wt": eval_metrics.get("macro_hd95_wt", 0.0),
     }
     with open(csv_file, mode="a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(row.keys()))
