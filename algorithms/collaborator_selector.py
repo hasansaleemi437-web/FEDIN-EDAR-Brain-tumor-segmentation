@@ -231,6 +231,7 @@ class SlidingWindowTrainMixin:
                 arrays,
                 train_config,
                 profile_only=(server_round == 1),
+                server_round=server_round,
             )
 
         # Fallback for normal strategies

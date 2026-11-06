@@ -151,8 +151,13 @@ class FedINDARStrategy(FedAvg):
         arrays: ArrayRecord,
         config: ConfigRecord,
         profile_only: bool,
-        server_round: int = 1,
+        server_round: int | None = None,
     ) -> list[Message]:
+        resolved_round = (
+            int(server_round)
+            if server_round is not None
+            else int(config.get("server-round", 1))
+        )
         messages: list[Message] = []
 
         for base in base_messages:
@@ -171,7 +176,7 @@ class FedINDARStrategy(FedAvg):
                 self.profile_mu_by_node[node_id] = self.base_mu
 
             node_config = ConfigRecord(dict(config))
-            node_config["server-round"] = int(server_round)
+            node_config["server-round"] = resolved_round
             node_config["fedindar-enabled"] = True
             node_config["fedindar-profile-only"] = profile_only
             node_config["proximal_mu"] = float(
